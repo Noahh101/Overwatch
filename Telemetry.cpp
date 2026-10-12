@@ -1,4 +1,5 @@
 #include "Telemetry.h"
+#include <cwchar>
 
 struct ProcessorPowerInformation {
     ULONG Number;
@@ -97,59 +98,108 @@ void RAMStats::update() {
     MEMORYSTATUSEX memInfo{};
     memInfo.dwLength = sizeof(memInfo);
     if (GlobalMemoryStatusEx(&memInfo)) {
-        totalPhysMem = (memInfo.ullTotalPhys / (1024.0 * 1024.0 * 1024.0) + 0.1);
-        currMemUsed = ((memInfo.ullTotalPhys - 0.1) - memInfo.ullAvailPhys) / (1024.0 * 1024.0 * 1024.0);
+        constexpr double bytesPerGigabyte = 1024.0 * 1024.0 * 1024.0;
+        totalPhysMem = memInfo.ullTotalPhys / bytesPerGigabyte;
+        currMemUsed = (memInfo.ullTotalPhys - memInfo.ullAvailPhys) / bytesPerGigabyte;
     }
 }
 
 bool GPUStats::init() {
-    adapter = nullptr;
     totalVram = 0.0;
     vramUsed = 0.0;
     isAvailable = false;
+    dedicatedUsageCounters.clear();
 
     IDXGIFactory1* dxgiFactory = nullptr;
-    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&dxgiFactory)))) return false;
-    
-    SIZE_T largestVram = 0;
+    if (FAILED(CreateDXGIFactory1(__uuidof(IDXGIFactory1), reinterpret_cast<void**>(&dxgiFactory))))
+        return false;
+
+    if (PdhOpenQueryW(nullptr, 0, &memoryQuery) != ERROR_SUCCESS) {
+        dxgiFactory->Release();
+        return false;
+    }
+
+    bool missingAdapterCounter = false;
     for (UINT i = 0;; ++i) {
         IDXGIAdapter1* tempAdapter = nullptr;
-        if (FAILED(dxgiFactory->EnumAdapters1(i, &tempAdapter)) || !tempAdapter) break;
-        
+        if (FAILED(dxgiFactory->EnumAdapters1(i, &tempAdapter)) || !tempAdapter)
+            break;
+
         DXGI_ADAPTER_DESC1 desc{};
-        IDXGIAdapter3* adapter3 = nullptr;
-        if (SUCCEEDED(tempAdapter->GetDesc1(&desc)) && 
-           !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
-           SUCCEEDED(tempAdapter->QueryInterface(__uuidof(IDXGIAdapter3), reinterpret_cast<void**>(&adapter3)))) {
-            
-            if (desc.DedicatedVideoMemory > largestVram) {
-                if (adapter) adapter->Release();
-                adapter = adapter3;
-                largestVram = desc.DedicatedVideoMemory;
-                totalVram = largestVram / (1024.0 * 1024.0 * 1024.0);
-            } else {
-                adapter3->Release();
+        if (SUCCEEDED(tempAdapter->GetDesc1(&desc)) &&
+            !(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
+            desc.DedicatedVideoMemory > 0) {
+            wchar_t counterPath[128]{};
+            std::swprintf(
+                counterPath, sizeof(counterPath) / sizeof(counterPath[0]),
+                L"\\GPU Adapter Memory(luid_0x%08lx_0x%08lx_phys_0)\\Dedicated Usage",
+                static_cast<unsigned long>(desc.AdapterLuid.HighPart),
+                static_cast<unsigned long>(desc.AdapterLuid.LowPart));
+
+            PDH_HCOUNTER counter = nullptr;
+            if (PdhAddEnglishCounterW(memoryQuery, counterPath, 0, &counter) == ERROR_SUCCESS) {
+                dedicatedUsageCounters.push_back(counter);
+                totalVram += desc.DedicatedVideoMemory / (1024.0 * 1024.0 * 1024.0);
+            }
+            else {
+                missingAdapterCounter = true;
             }
         }
         tempAdapter->Release();
     }
     dxgiFactory->Release();
-    
-    isAvailable = (adapter != nullptr);
+
+    if (missingAdapterCounter || dedicatedUsageCounters.empty() ||
+        PdhCollectQueryData(memoryQuery) != ERROR_SUCCESS) {
+        cleanup();
+        return false;
+    }
+
+    isAvailable = true;
     return isAvailable;
 }
 
 void GPUStats::update() {
-    if (!adapter) return;
-    DXGI_QUERY_VIDEO_MEMORY_INFO info{};
-    if (SUCCEEDED(adapter->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &info))) {
-        vramUsed = info.CurrentUsage / (1024.0 * 1024.0 * 1024.0);
+    if (!isAvailable || !memoryQuery)
+        return;
+
+    if (PdhCollectQueryData(memoryQuery) != ERROR_SUCCESS) {
+        isAvailable = false;
+        return;
     }
+
+    constexpr double bytesPerGigabyte = 1024.0 * 1024.0 * 1024.0;
+    double totalUsedBytes = 0.0;
+    bool allCountersValid = true;
+    for (PDH_HCOUNTER counter : dedicatedUsageCounters) {
+        PDH_FMT_COUNTERVALUE value{};
+        if (PdhGetFormattedCounterValue(counter, PDH_FMT_LARGE, nullptr, &value) != ERROR_SUCCESS) {
+            allCountersValid = false;
+            break;
+        }
+        if (value.CStatus != kPdhCStatusValidData &&
+            value.CStatus != kPdhCStatusNewData) {
+            allCountersValid = false;
+            break;
+        }
+        if (value.largeValue < 0) {
+            allCountersValid = false;
+            break;
+        }
+        totalUsedBytes += static_cast<double>(value.largeValue);
+    }
+
+    if (allCountersValid)
+        vramUsed = totalUsedBytes / bytesPerGigabyte;
 }
 
 void GPUStats::cleanup() {
-    if (adapter) {
-        adapter->Release();
-        adapter = nullptr;
+    isAvailable = false;
+    totalVram = 0.0;
+    vramUsed = 0.0;
+    dedicatedUsageCounters.clear();
+    if (memoryQuery) {
+        PdhCloseQuery(memoryQuery);
+        memoryQuery = nullptr;
     }
 }

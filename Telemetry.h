@@ -21,20 +21,21 @@ struct CPUStats {
 
 
 struct RAMStats {
-    double totalPhysMem;
-    double currMemUsed;
+    double totalPhysMem = 0.0;
+    double currMemUsed = 0.0;
     
     // refresh memory readings
     void update();
 };
 
 struct GPUStats {
-    IDXGIAdapter3* adapter;
-    double totalVram;
-    double vramUsed;
-    bool isAvailable;
+    double totalVram = 0.0;
+    double vramUsed = 0.0;
+    bool isAvailable = false;
+    PDH_HQUERY memoryQuery = nullptr;
+    std::vector<PDH_HCOUNTER> dedicatedUsageCounters;
     
-    // manage the dxgi adapter
+    // manage system-wide dedicated GPU memory counters
     bool init();
     void update();
     void cleanup();
