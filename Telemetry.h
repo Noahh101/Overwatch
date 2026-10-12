@@ -1,12 +1,30 @@
 #pragma once
 #include <windows.h>
 #include <dxgi1_4.h>
+#include <pdh.h>
+#include <powrprof.h>
+#include <vector>
+
+struct CPUStats {
+    unsigned long currentMhz = 0;
+    unsigned long nominalMhz = 0;
+    unsigned long peakMhz = 0;
+    bool isAvailable = false;
+    PDH_HQUERY query = nullptr;
+    PDH_HCOUNTER performanceCounter = nullptr;
+    ULONGLONG lastSampleTime = 0;
+
+    bool init();
+    void update();
+    void cleanup();
+};
+
 
 struct RAMStats {
     double totalPhysMem;
     double currMemUsed;
     
-    // Function to grab live memory data
+    // refresh memory readings
     void update();
 };
 
@@ -16,7 +34,7 @@ struct GPUStats {
     double vramUsed;
     bool isAvailable;
     
-    // Functions to manage the DirectX COM connection
+    // manage the dxgi adapter
     bool init();
     void update();
     void cleanup();

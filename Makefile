@@ -1,6 +1,6 @@
 CXX = g++
 CXXFLAGS = -Wall -g -I./imgui
-LDFLAGS = -lglfw3 -lopengl32 -lgdi32 -ldxgi -mwindows -static-libgcc -static-libstdc++
+LDFLAGS = -lglfw3 -lopengl32 -lgdi32 -ldxgi -lpdh -lpowrprof -mwindows -static-libgcc -static-libstdc++
 
 SOURCES = main.cpp Telemetry.cpp \
           imgui/imgui.cpp imgui/imgui_demo.cpp imgui/imgui_draw.cpp \
